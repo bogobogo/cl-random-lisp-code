@@ -208,5 +208,42 @@
 (defun random-data-symbol ()
   (let ((syms (possible-symbols)))
     (elt syms (random (length syms)))))
-	   
 
+(defmacro with-muffled-style-warns (&body body)
+  `(handler-bind
+       ((alexandria::simple-warning
+	 (lambda (warning)
+	   (muffle-warning warning))))
+     ,@body))
+
+
+(defun lambda-compilable-p (expr)
+  (handler-case (with-muffled-style-warns
+		  (compile nil `(lambda () ,expr)))
+    (error () nil)
+    (:no-error (a b c) (declare (ignore b c))
+	       a)))
+
+(defun lambda-runnable-p (expr)
+  (let ((it (lambda-compilable-p expr)))
+    (if it
+	(handler-case (funcall it)
+	  (error () nil)
+	  (:no-error (&rest vars) (declare (ignore vars)) t)))))
+  
+(defun cure-undefs (expr)
+  (let ((it (find-undefs expr)))
+    (let ((vars (cdr (assoc :variables it)))
+	  (funcs (cdr (assoc :functions it))))
+      `(let ,vars
+	 (flet ,(mapcar (lambda (x)
+			  `(,x (&rest args) (declare (ignore args)) nil))
+			funcs)
+	   ,expr)))))
+
+(defun random-lambda-runnable-expression ()
+  (let ((expr (cure-undefs (random-expression))))
+    (iter (while (not (lambda-runnable-p expr)))
+	  (setf expr (cure-undefs (random-expression))))
+    expr))
+    

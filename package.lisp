@@ -1,5 +1,5 @@
 ;;;; package.lisp
 
 (defpackage #:cl-random-lisp-code
-  (:use #:cl #:iterate))
+  (:use #:cl #:iterate #:cl-indeterminism))
 

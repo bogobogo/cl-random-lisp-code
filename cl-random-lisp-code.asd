@@ -5,7 +5,7 @@
   :description "Generate random programs on the subset of CL"
   :author "Alexandr Popolitov <popolit@gmail.com>"
   :license "GPL"
-  :depends-on (#:iterate #:cl-interpol)
+  :depends-on (#:iterate #:cl-interpol #:alexandria #:cl-indeterminism)
   :components ((:file "package")
                (:file "cl-random-lisp-code")))
 
