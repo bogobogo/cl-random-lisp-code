@@ -85,10 +85,11 @@
     it))
 
 (defparameter *n-ints* 5)
-(defparameter *data-expr-max-depth* 10)
+(defparameter *data-expr-max-depth* 5)
 
 (defun random-data-expr ()
-  (let ((*allow-undefined* t))
+  (let ((*allow-undefined* t)
+	(*list-decay* 0.2))
     `(quote ,(%random-data-expr *data-expr-max-depth*))))
 
 (defun %random-data-expr (&optional (depth 0))
@@ -98,11 +99,16 @@
 	       (random-data-cons depth)
 	       (random-data-atom))))
 
+(defparameter *depth* 10)
+
 (defun random-expression (&optional (top t))
   (if top
       (if-rand *atom-prob*
 	       (random-atom)
-	       (random-cons-expression))
+	       (if (equal 0 *depth*)
+		   (random-atom)
+		   (let ((*depth* (1- *depth*)))
+		     (random-cons-expression))))
       (random 10)))
 
 ;; (defun random-expression ()
@@ -119,7 +125,7 @@
 	   (random *n-ints*)))
 
 (defparameter *limit-of-list-elts* 10)
-(defparameter *list-decay* 0.6)
+(defparameter *list-decay* 0.8)
 
 (defun random-data-cons (&optional (depth 1))
   (poisson-forms (*limit-of-list-elts* *list-decay*)
@@ -155,8 +161,8 @@
 
 (defun random-lambda-form ()
   (let ((args (let ((*allow-undefined* t))
-		(poisson-forms (*limit-of-lambda-args* *lambda-decay*)
-		    (random-var-name)))))
+		(delete-duplicates (poisson-forms (*limit-of-lambda-args* *lambda-decay*)
+				     (random-var-name))))))
     (let ((body (let ((*symbol-table* (cons args *symbol-table*)))
 		  (poisson-forms (*limit-of-progn-body* *progn-decay*)
 		      (random-expression)))))
@@ -167,8 +173,9 @@
   `(setf ,(random-var-name) ,(random-expression)))
 
 (defun random-let-form ()
-  (let ((vars (poisson-forms (*limit-of-let-vars* *let-decay*)
-		(list (random-var-name) (random-expression)))))
+  (let ((vars (delete-duplicates (poisson-forms (*limit-of-let-vars* *let-decay*)
+				   (list (random-var-name) (random-expression)))
+				 :key #'car)))
     (let ((var-names (mapcar #'car vars)))
       (let ((body (let ((*symbol-table* (cons var-names
 					      *symbol-table*)))
@@ -198,16 +205,21 @@
 	   (random-function-call)
 	   (random-special-operator)))
 
-(defun possible-symbols ()
-  (delete-duplicates (append (mapcar #'car *vanilla-function-table*)
-			     (defined-special-operators)
-			     '(t nil)
-			     (iter (for i from 0 below *nvars*)
-				   (collect (%random-var-name i))))))
+(let ((psyms (delete-duplicates (append (mapcar #'car *vanilla-function-table*)
+					(defined-special-operators)
+					'(t nil)
+					(iter (for i from 0 below *nvars*)
+					      (collect (%random-var-name i)))))))
+  (defun possible-symbols ()
+    psyms))
 
 (defun random-data-symbol ()
   (let ((syms (possible-symbols)))
-    (elt syms (random (length syms)))))
+    (if-rand 0.5
+	     (if-rand 0.5
+		      't
+		      'nil)
+	     (elt syms (random (length syms))))))
 
 (defmacro with-muffled-style-warns (&body body)
   `(handler-bind
@@ -247,3 +259,60 @@
 	  (setf expr (cure-undefs (random-expression))))
     expr))
     
+(defun random-expression-with-constraints (&key constraints cure-undefs evaled-constraints)
+  (let ((expr-gen (if cure-undefs
+		      (lambda () (cure-undefs `(locally
+						   (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
+						 ,(random-expression))))
+		      (lambda () `(locally
+				      (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
+				    ,(random-expression))))))
+    (let ((expr (funcall expr-gen)))
+      (iter (while (not (block constraints
+			  (and (iter (for constraint in constraints)
+				     (if (not (funcall constraint expr))
+					 (return nil))
+				     (finally (return t)))
+			       (let ((evaled-expr (with-muffled-style-warns
+						    (handler-case (eval expr)
+						      (error () (return-from constraints nil))))))
+				 (iter (for constraint in evaled-constraints)
+				       (if (not (funcall constraint evaled-expr))
+					   (return nil))
+				       (finally (return t))))))))
+	    (for i from 1)
+	    (when (equal 0 (mod i 1000))
+	      (format t ".")
+	      (setf i 0))
+	    (setf expr (funcall expr-gen)))
+      (format t "~%")
+      expr)))
+
+(defun simple-function (n)
+  (lambda (fun)
+    (and (functionp fun)
+	 (equal n (length (sb-introspect:function-lambda-list fun))))))
+
+(defun let-form-p (expr)
+  (and (consp expr)
+       (eq 'let (car expr))))
+
+(defun elt-not-function-test (fun)
+  (let ((it (random-data-atom)))
+    (let ((res (handler-case (funcall fun it)
+		 (error () (return-from elt-not-function-test nil)))))
+      (or (and it (not res))
+	  (and (not it) res)))))
+
+(defun not-function-test (n)
+  (lambda (fun)
+    (iter (for i from 1 to n)
+	  (if (not (elt-not-function-test fun))
+	      (return nil))
+	  (finally (return t)))))
+
+(defun frob ()
+  (with-muffled-style-warns 
+    (random-expression-with-constraints
+     :constraints (list #'lambda-runnable-p) ; #'let-form-p)
+     :evaled-constraints (list (simple-function 1) (not-function-test 1000)))))
