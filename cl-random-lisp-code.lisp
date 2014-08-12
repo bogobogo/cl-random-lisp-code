@@ -21,7 +21,7 @@
 (defparameter *atom-prob* 0.5)
 (defparameter *variable-prob* 0.5)
 
-(defparameter *symbol-table* '((var-0)))
+(defparameter *symbol-table* '())
 (defparameter *vanilla-function-table* '((eq . 2) (atom . 1) (car . 1) (cdr . 1)
 					 (cons . 2)))
 (defparameter *function-table* (list *vanilla-function-table*))
@@ -78,11 +78,16 @@
 
 
 (defun random-var-name ()
-  (let ((it (%random-var-name)))
-    (iter (while (and (not *allow-undefined*)
-		      (not (symbol-table-find it))))
-	  (setf it (%random-var-name)))
-    it))
+  (if (and (not *allow-undefined*)
+	   (not *symbol-table*))
+      (error 'random-codegen-fail :msg "Attempt to generate variable name with empty symbol table")
+      (let ((it (%random-var-name)))
+	(iter (while (and (not *allow-undefined*)
+			  (not (symbol-table-find it))))
+	      (setf it (%random-var-name)))
+	it)))
+
+
 
 (defparameter *n-ints* 5)
 (defparameter *data-expr-max-depth* 5)
@@ -174,7 +179,9 @@
 
 (defun random-let-form ()
   (let ((vars (delete-duplicates (poisson-forms (*limit-of-let-vars* *let-decay*)
-				   (list (random-var-name) (random-expression)))
+				   (list (let ((*allow-undefined* t))
+					   (random-var-name))
+					 (random-expression)))
 				 :key #'car)))
     (let ((var-names (mapcar #'car vars)))
       (let ((body (let ((*symbol-table* (cons var-names
@@ -201,9 +208,11 @@
 (defparameter *funcall-prob* 0.5)
 
 (defun random-cons-expression ()
-  (if-rand *funcall-prob*
-	   (random-function-call)
-	   (random-special-operator)))
+  (handler-case (if-rand *funcall-prob*
+			 (random-function-call)
+			 (random-special-operator))
+    (random-codegen-fail ()
+      (random-cons-expression))))
 
 (let ((psyms (delete-duplicates (append (mapcar #'car *vanilla-function-table*)
 					(defined-special-operators)
@@ -231,7 +240,9 @@
 
 (defun lambda-compilable-p (expr)
   (handler-case (with-muffled-style-warns
-		  (compile nil `(lambda () ,expr)))
+		  (compile nil `(lambda ()
+				  (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
+				  ,expr)))
     (error () nil)
     (:no-error (a b c) (declare (ignore b c))
 	       a)))
@@ -284,9 +295,10 @@
 	    (when (equal 0 (mod i 1000))
 	      (format t ".")
 	      (setf i 0))
-	    (setf expr (funcall expr-gen)))
+	    (setf expr (with-muffled-style-warns
+			 (funcall expr-gen))))
       (format t "~%")
-      expr)))
+      (caddr expr))))
 
 (defun simple-function (n)
   (lambda (fun)
@@ -297,22 +309,94 @@
   (and (consp expr)
        (eq 'let (car expr))))
 
-(defun elt-not-function-test (fun)
+(defmacro define-repeated-function-test (name &body body)
+  (let ((elt-name (intern #?"ELT-$((string name))"))) 
+    `(progn (defun ,elt-name (fun)
+	      (macrolet ((failing-funcall (fun it)
+			   `(handler-case (funcall ,fun ,it)
+			      (error () (return-from ,',elt-name nil)))))
+		,@body))
+	    (defun ,name (n)
+	      (lambda (fun)
+		(iter (for i from 1 to n)
+		      (if (not (,elt-name fun))
+			  (return nil))
+		      (finally (return t))))))))
+
+(define-repeated-function-test not-function-test
   (let ((it (random-data-atom)))
-    (let ((res (handler-case (funcall fun it)
-		 (error () (return-from elt-not-function-test nil)))))
+    (let ((res (failing-funcall fun it)))
       (or (and it (not res))
 	  (and (not it) res)))))
-
-(defun not-function-test (n)
-  (lambda (fun)
-    (iter (for i from 1 to n)
-	  (if (not (elt-not-function-test fun))
-	      (return nil))
-	  (finally (return t)))))
+    
+(define-repeated-function-test *2-function-test
+  (let ((it (random *n-ints*)))
+    (let ((res (failing-funcall fun it)))
+      (equal res (* it 2)))))
+  
+(defun frob ()
+  (with-muffled-style-warns 
+    (random-expression-with-constraints
+     ; :constraints (list #'lambda-runnable-p) ; #'let-form-p)
+     :evaled-constraints (list (simple-function 1)
+			       (not-function-test 1000)))))
 
 (defun frob ()
   (with-muffled-style-warns 
     (random-expression-with-constraints
      :constraints (list #'lambda-runnable-p) ; #'let-form-p)
      :evaled-constraints (list (simple-function 1) (not-function-test 1000)))))
+
+(defun frob-1 ()
+  (with-muffled-style-warns 
+    (random-expression-with-constraints
+     :constraints (list #'lambda-runnable-p) ; #'let-form-p)
+     :evaled-constraints (list (simple-function 1) (*2-function-test 1000)))))
+
+(defun patternize-conses-of-same-length (conses)
+  (let ((pre-patterns (iter (for i from 0 below (length (car conses)))
+			    (collect (patternize-code (mapcar (lambda (x)
+								(elt x i))
+							      conses))))))
+    (let (res)
+      (labels ((rec (pre-patterns acc)
+		 (if (not pre-patterns)
+		     (push (reverse acc) res)
+		     (if (eq '*** (car pre-patterns))
+			 (rec (cdr pre-patterns) (cons '*** acc))
+			 (iter (for elt in (car pre-patterns))
+			       (rec (cdr pre-patterns) (cons elt acc)))))))
+	(rec pre-patterns nil))
+      res)))
+      
+			    
+
+(defun patternize-conses (conses total)
+  (let ((classes (make-hash-table :test #'equal)))
+    (iter (for cons in conses)
+	  (push cons (gethash (length cons) classes)))
+    (iter (for (key val) in-hashtable classes)
+	  (when (> (length val) (sqrt total))
+	    (appending (patternize-conses-of-same-length val))))))
+	  
+    
+
+(defun patternize-code (codes)
+  (let ((total (length codes))
+	(classes (make-hash-table :test #'equal)))
+    (iter (for code in codes)
+	  (if (atom code)
+	      (push code (gethash code classes))
+	      (push code (gethash '*cons* classes))))
+    (or (iter (for (key val) in-hashtable classes)
+	      (if (eq '*cons* key)
+		  (appending (patternize-conses val total))
+		  (when (> (length val) (sqrt total))
+		    (collect key))))
+	'***)))
+	      
+	      
+(defun frob-2 ()
+  (patternize-code (iter (for i from 1 to 100)
+			 (collect (frob))
+			 (format t "   *** Found ~a!~%" i))))
