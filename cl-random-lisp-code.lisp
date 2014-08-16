@@ -237,6 +237,7 @@
 	   (muffle-warning warning))))
      ,@body))
 
+(declaim (sb-ext:muffle-conditions sb-ext:compiler-note))
 
 (defun lambda-compilable-p (expr)
   (handler-case (with-muffled-style-warns
@@ -309,11 +310,15 @@
   (and (consp expr)
        (eq 'let (car expr))))
 
+(defun universal-wildcard-p (sym)
+  (and (symbolp sym)
+       (equal "***" (string sym))))
+
 (defmacro define-repeated-function-test (name &body body)
   (let ((elt-name (intern #?"ELT-$((string name))"))) 
     `(progn (defun ,elt-name (fun)
-	      (macrolet ((failing-funcall (fun it)
-			   `(handler-case (funcall ,fun ,it)
+	      (macrolet ((failing-funcall (fun &rest its)
+			   `(handler-case (funcall ,fun ,@its)
 			      (error () (return-from ,',elt-name nil)))))
 		,@body))
 	    (defun ,name (n)
@@ -328,6 +333,15 @@
     (let ((res (failing-funcall fun it)))
       (or (and it (not res))
 	  (and (not it) res)))))
+
+(define-repeated-function-test xor-function-test  (let ((it1 (random-data-atom))
+	(it2 (random-data-atom)))
+    (let ((res (failing-funcall fun it1 it2)))
+      (cond ((and it1 it2) (not res))
+	    ((and it1 (not it2)) res)
+	    ((and (not it1) it2) res)
+	    ((and (not it1) (not it2)) (not res))))))
+
     
 (define-repeated-function-test *2-function-test
   (let ((it (random *n-ints*)))
@@ -341,6 +355,14 @@
      :evaled-constraints (list (simple-function 1)
 			       (not-function-test 1000)))))
 
+(defun frob-xor ()
+  (with-muffled-style-warns 
+    (random-expression-with-constraints
+     ; :constraints (list #'lambda-runnable-p) ; #'let-form-p)
+     :evaled-constraints (list (simple-function 2)
+			       (xor-function-test 1000)))))
+
+
 (defun frob ()
   (with-muffled-style-warns 
     (random-expression-with-constraints
@@ -353,50 +375,179 @@
      :constraints (list #'lambda-runnable-p) ; #'let-form-p)
      :evaled-constraints (list (simple-function 1) (*2-function-test 1000)))))
 
+(defun pre-patternize-conses-of-same-length (conses)
+  "Patternize each subexpression separately."
+  (iter (for i from 0 below (length (cdar conses)))
+	(collect (or (%patternize-code (mapcar (lambda (x)
+						 (cons (car x)
+						       (elt (cdr x) i)))
+					       conses))
+		     '***))))
+
+(defun direct-product-respecting-wildcard (lst)
+  (let (res)
+    (labels ((rec (pre-patterns acc)
+	       (if (not pre-patterns)
+		   (push (reverse acc) res)
+		   (if (universal-wildcard-p (car pre-patterns))
+		       (rec (cdr pre-patterns) (cons '*** acc))
+		       (iter (for elt in (car pre-patterns))
+			     (rec (cdr pre-patterns) (cons elt acc)))))))
+      (rec lst nil))
+    res))
+
+(defun grep-meaningful-patterns (patterns codes)
+  (delete-duplicates
+   (iter (for pattern in patterns)
+	 (let ((affinity (/ (iter (for (id . cons) in codes)
+				  (if (let ((*current-pattern-symbol-table*
+					     (gethash id *pattern-symbol-tables*)))
+					(code-matches-pattern-p pattern cons))
+				      (summing 1)))
+			    (* *num-sigmas* (sqrt (length codes))))))
+	   (if (> affinity 1)
+	       (collect pattern))))
+   :test #'equal))
+
+
+(defun grep-leaf-patterns (patterns)
+  (let ((res (make-list (length patterns))))
+    (iter (for pattern-1 on patterns)
+	  (for pos-1 from 0)
+	  (iter (for pattern-2 on (cdr pattern-1))
+		(for pos-2 from (1+ pos-1))
+		(let ((1-in-2 (code-matches-pattern-p (car pattern-2) (car pattern-1) t))
+		      (2-in-1 (code-matches-pattern-p (car pattern-1) (car pattern-2) t)))
+		  (cond ((and 1-in-2 (not 2-in-1)) (setf (elt res pos-2) t))
+			((and 2-in-1 (not 1-in-2)) (setf (elt res pos-1) t))))))
+    ;; (format t "Patterns ~a~%generals ~a~%" patterns res)
+    (iter (for pattern in patterns)
+	  (for general in res)
+	  (if (not general)
+	      (collect pattern)))))
+	  
 (defun patternize-conses-of-same-length (conses)
-  (let ((pre-patterns (iter (for i from 0 below (length (car conses)))
-			    (collect (patternize-code (mapcar (lambda (x)
-								(elt x i))
-							      conses))))))
-    (let (res)
-      (labels ((rec (pre-patterns acc)
-		 (if (not pre-patterns)
-		     (push (reverse acc) res)
-		     (if (eq '*** (car pre-patterns))
-			 (rec (cdr pre-patterns) (cons '*** acc))
-			 (iter (for elt in (car pre-patterns))
-			       (rec (cdr pre-patterns) (cons elt acc)))))))
-	(rec pre-patterns nil))
-      res)))
+  (grep-leaf-patterns (grep-meaningful-patterns (direct-product-respecting-wildcard
+						 (pre-patternize-conses-of-same-length conses))
+						conses)))
       
-			    
+	      ;; (format t "Pattern ~a matched ~a of ~a conses~%" pattern affinity (length conses))
+	      ;; (if (equal pattern '(ignorable var-0))
+	      ;; 	  (format t "Conses are ~a~%" conses)))))))
 
 (defun patternize-conses (conses total)
   (let ((classes (make-hash-table :test #'equal)))
     (iter (for cons in conses)
-	  (push cons (gethash (length cons) classes)))
-    (iter (for (key val) in-hashtable classes)
-	  (when (> (length val) (sqrt total))
-	    (appending (patternize-conses-of-same-length val))))))
-	  
-    
+	  (push cons (gethash (length (cdr cons)) classes)))
+    (let ((it (iter (for (key val) in-hashtable classes)
+		    (when (> (length val) (* *num-sigmas* (sqrt total)))
+		      (appending (patternize-conses-of-same-length val total))))))
+      (if it
+	  (cons '*** it)))))
 
+(defparameter *pattern-symbol-tables* (make-hash-table :test #'equal))
+(defparameter *current-pattern-symbol-table* nil)
+	  
 (defun patternize-code (codes)
-  (let ((total (length codes))
-	(classes (make-hash-table :test #'equal)))
-    (iter (for code in codes)
+  ;; (format t "In patternize code ~a~%" codes)
+  (let ((*pattern-symbol-tables* (make-hash-table :test #'equal)))
+    (%patternize-code (iter (for code in codes)
+			    (for i from 1)
+			    (setf (gethash i *pattern-symbol-tables*) (make-hash-table))
+			    (collect `(,i . ,code))))))
+
+(defun variable-atom-p (code)
+  (and (symbolp code)
+       (m~ "^VAR-(\\d+)$" (string code))
+       (parse-integer $1)))
+
+(defun translate-var-name (id code)
+  (let ((*current-pattern-symbol-table* (gethash id *pattern-symbol-tables*)))
+    (%translate-var-name code)))
+
+(defun %translate-var-name (code)
+  (if *current-pattern-symbol-table*
+      (multiple-value-bind (item got) (gethash code *current-pattern-symbol-table*)
+	(if got
+	    item
+	    (let ((it (setf (gethash code *current-pattern-symbol-table*)
+			    (%random-var-name (hash-table-count *current-pattern-symbol-table*)))))
+	      (format t "New translation: ~a goes to ~a~%" code it)
+	      it)))
+      code))
+
+(defparameter *num-sigmas* 3)
+
+(defun most-probable-var-names (vars)
+  (let ((res (make-hash-table))
+	(total (length vars)))
+    (iter (for (id . var-name) in vars)
+	  (incf (gethash var-name res 0)))
+    (let ((it (iter (for (var-name count) in-hashtable res)
+		    (if (> count (* *num-sigmas* (sqrt total)))
+			(collect var-name)))))
+      (if it
+	  (cons '*** it)))))
+	  
+(defun %patternize-code (codes &optional (total (length codes)))
+  (let ((classes (make-hash-table :test #'equal)))
+    (iter (for (id . code) in codes)
 	  (if (atom code)
-	      (push code (gethash code classes))
-	      (push code (gethash '*cons* classes))))
-    (or (iter (for (key val) in-hashtable classes)
-	      (if (eq '*cons* key)
-		  (appending (patternize-conses val total))
-		  (when (> (length val) (sqrt total))
-		    (collect key))))
-	'***)))
+	      (if (variable-atom-p code)
+		  (push `(,id . ,(translate-var-name id code)) (gethash '*var* classes))
+		  (push code (gethash code classes)))
+	      (push `(,id . ,code) (gethash '*cons* classes))))
+    (let ((it (iter (for (key val) in-hashtable classes)
+		    (cond ((eq '*cons* key)
+			   (appending (patternize-conses val total)))
+			  ((eq '*var* key)
+			   (appending (most-probable-var-names val)))
+			  (t (when (> (length val) (* *num-sigmas* (sqrt total)))
+			       (collect key)))))))
+      (if it
+	  (cons '*** it)))))
 	      
+(defun code-matches-pattern-p (pattern code &optional ignore-variability)
+  (cond ((universal-wildcard-p pattern) t)
+	((atom pattern) (if (and (not ignore-variability)
+				 (variable-atom-p pattern))
+			    (if (variable-atom-p code)
+				(equal pattern (%translate-var-name code)))
+			    (equal pattern code)))
+	(t (if (consp code)
+	       (and (equal (length code) (length pattern))
+		    (iter (for pattern-elt in pattern)
+			  (for code-elt in code)
+			  (if (not (code-matches-pattern-p pattern-elt code-elt ignore-variability))
+			      (return-from code-matches-pattern-p nil))
+			  (finally (return t))))))))
+	       
 	      
 (defun frob-2 ()
-  (patternize-code (iter (for i from 1 to 100)
-			 (collect (frob))
-			 (format t "   *** Found ~a!~%" i))))
+  (iter (for i from 1 to 10)
+	(collect (frob))
+	(format t "   *** Found ~a!~%" i)))
+
+(defun scan-pattern-for-wildcards (pattern)
+  (if (universal-wildcard-p pattern)
+      '***
+      (let (res)
+	(labels ((rec (tree)
+		   (if (not (atom tree))
+		       (iter (for potential-place on tree)
+			     (when (universal-wildcard-p (car potential-place))
+			       (push potential-place res))
+			     (rec (car potential-place))))))
+	  (rec pattern)
+	  res))))
+
+(defun mk-code-generator-from-pattern (pattern elt-code-generator)
+  (let ((my-pattern (copy-tree pattern)))
+    (let ((places (scan-pattern-for-wildcards my-pattern)))
+      (if (universal-wildcard-p places)
+	  (lambda ()
+	    (funcall elt-code-generator))
+	  (lambda ()
+	    (iter (for place in places)
+		  (setf (car place) (funcall elt-code-generator)))
+	    (copy-tree my-pattern))))))
