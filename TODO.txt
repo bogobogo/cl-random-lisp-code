@@ -1,0 +1,3 @@
+* pattern-aided code generation
+  * bunch of context-sensitive random-code generation functions
+* convenient interface to skew probabilities of generation of this-or-that code
