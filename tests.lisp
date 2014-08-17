@@ -99,3 +99,13 @@
   (is (equal '((foo1 *** bar1) (foo *** bar))
 	     (cl-rlc::patternize-conses-of-same-length my-conses))))
 						  
+(test patternize-code
+  (is (equal '((a b ***))
+	     (cl-rlc::patternize-code (iter (for i from 1 to 100)
+					    (collect (list 'a 'b i))))))
+  (is (equal '*** (cl-rlc::patternize-code '(a a a b c d))))
+  (is (equal '(a) (let ((cl-rlc::*num-sigmas* 1))
+		    (cl-rlc::patternize-code '(a a a b c d)))))
+  (is (equal '(a b) (let ((cl-rlc::*num-sigmas* 1))
+		      (cl-rlc::patternize-code '(a a a b b b c d))))))
+

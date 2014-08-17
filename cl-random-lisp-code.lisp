@@ -441,7 +441,7 @@
 	  (push cons (gethash (length (cdr cons)) classes)))
     (let ((it (iter (for (key val) in-hashtable classes)
 		    (when (> (length val) (* *num-sigmas* (sqrt total)))
-		      (appending (patternize-conses-of-same-length val total))))))
+		      (appending (patternize-conses-of-same-length val))))))
       (if it
 	  (cons '*** it)))))
 
@@ -450,11 +450,13 @@
 	  
 (defun patternize-code (codes)
   ;; (format t "In patternize code ~a~%" codes)
-  (let ((*pattern-symbol-tables* (make-hash-table :test #'equal)))
-    (%patternize-code (iter (for code in codes)
-			    (for i from 1)
-			    (setf (gethash i *pattern-symbol-tables*) (make-hash-table))
-			    (collect `(,i . ,code))))))
+  (or (grep-leaf-patterns
+       (let ((*pattern-symbol-tables* (make-hash-table :test #'equal)))
+	 (%patternize-code (iter (for code in codes)
+				 (for i from 1)
+				 (setf (gethash i *pattern-symbol-tables*) (make-hash-table))
+				 (collect `(,i . ,code))))))
+      '***))
 
 (defun variable-atom-p (code)
   (and (symbolp code)
