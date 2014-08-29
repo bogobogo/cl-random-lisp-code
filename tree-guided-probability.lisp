@@ -29,14 +29,17 @@
 
 (defparameter *weights* nil)
 
-(defparameter *built-ins* '(cons eq quote atom car cdr cond lambda labels defun))
+(defparameter *built-ins* '(cons eq quote atom car cdr cond lambda labels defun nil t))
+
+(defparameter *car-weight-gen* (lambda (weights) (declare (ignore weights)) nil))
+(defparameter *cdr-weight-gen* (lambda (weights) (declare (ignore weights)) nil))
 
 (defmacro going-car-weights (&body body)
-  `(let ((*weights* (cdr (assoc :car-weights *weights*))))
+  `(let ((*weights* (funcall *car-weight-gen* *weights*)))
      ,@body))
 
 (defmacro going-cdr-weights (&body body)
-  `(let ((*weights* (cdr (assoc :cdr-weights *weights*))))
+  `(let ((*weights* (funcall *cdr-weight-gen* *weights*)))
      ,@body))
 
 
@@ -115,9 +118,9 @@
 (defun random-built-in-sym ()
   (rand-from-set *built-ins* :prefix :built-in))
 
-(defun random-symbol ()
-  (rand-cond (:a 'a)
-	     (:b 'b)))
+;; (defun random-symbol ()
+;;   (rand-cond (:a 'a)
+;; 	     (:b 'b)))
 
 (defun random-expression ()
   (rand-cond (:cons (cons (going-car-weights (random-expression))
@@ -125,3 +128,14 @@
 	     (t (random-symbol))))
 	 
 ;; now, how to use this framework in my generation of proper lisp code?
+
+;; OK, this can be used to generation of almost always proper lists
+(defun frob ()
+  (let ((*cdr-weight-gen* (lambda (weights)
+			    (declare (ignore weights))
+			    '((:built-in-nil . 1000000)
+			      (:built-in-sym . 1000000)))))
+    (random-expression)))
+
+;; What about other syntactic rules for special operators?
+;; Can they also be expressed using same probablistic framework?
