@@ -2,6 +2,8 @@
 
 (in-package #:cl-random-lisp-code)
 
+(enable-read-macro-tokens)
+
 (define-condition random-codegen-fail (error)
   ())
 
@@ -460,7 +462,7 @@
 
 (defun variable-atom-p (code)
   (and (symbolp code)
-       (m~ "^VAR-(\\d+)$" (string code))
+       (m~ "^VAR-(\d+)$" (string code))
        (parse-integer $1)))
 
 (defun translate-var-name (id code)

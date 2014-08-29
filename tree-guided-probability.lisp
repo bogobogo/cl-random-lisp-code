@@ -7,56 +7,121 @@
 
 (defpackage #:cl-rlc-snippets
   (:nicknames #:cl-rlc-snip)
-  (:use #:cl #:iterate #:cl-indeterminism #:lol-re #:defmacro-enhance))
+  (:use #:cl #:iterate #:cl-indeterminism #:lol-re #:defmacro-enhance #:lol-re
+	#:cl-read-macro-tokens))
 
 (in-package #:cl-rlc-snippets)
+
+(cl-interpol:enable-interpol-syntax)
+
+(enable-read-macro-tokens)
 
 (defparameter *cons-prob* (/ 1 3))
 (defparameter *a-sym-prob* (/ 1 3))
 (defparameter *b-sym-prob* (/ 1 3))
 
-(defparameter *default-probs* `((:cons . ,(/ 1 3))
-				(:a . ,(/ 1 3))
-				(:b . ,(/ 1 3))))
+(defparameter *nvars* 10)
+(defparameter *nfuns* 10)
 
-(defparameter *probs* nil)
+(defparameter *default-weights* `((:cons . 1)
+				  (:a . 1)
+				  (:b . 1)))
 
-(defmacro going-car-probs (&body body)
-  `(let ((*probs* (cdr (assoc :car-probs *probs*))))
+(defparameter *weights* nil)
+
+(defparameter *built-ins* '(cons eq quote atom car cdr cond lambda labels defun))
+
+(defmacro going-car-weights (&body body)
+  `(let ((*weights* (cdr (assoc :car-weights *weights*))))
      ,@body))
 
-(defmacro going-cdr-probs (&body body)
-  `(let ((*probs* (cdr (assoc :cdr-probs *probs*))))
+(defmacro going-cdr-weights (&body body)
+  `(let ((*weights* (cdr (assoc :cdr-weights *weights*))))
      ,@body))
 
 
-(defun fetch-prob (key)
-  (or (cdr (assoc key *probs*))
-      (cdr (assoc key *default-probs*))
-      (error "Key ~a not found in probabilities." key)))
+(defun fetch-weight (key)
+  (or (cdr (assoc key *weights*))
+      (cdr (assoc key *default-weights*))
+      1))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun generate-weights-and-funs (clauses)
+    (iter (for (key . code) in clauses)
+	  (collect `(fetch-weight ,key) into weights)
+	  (collect `(lambda () ,@code) into funs)
+	  (finally (return (list weights funs))))))
 
 (defmacro! rand-cond (&rest clauses)
-  `(let ((,g!-probs (list ,@(mapcar (lambda (x)
-				      (if (eq 't (car x))
-					  1
-					  `(fetch-prob ,(car x))))
-				    clauses)))
-	 (,g!-funs (list ,@(mapcar (lambda (x)
-				     `(lambda () ,@(cdr x)))
-				   clauses)))
-	 (,g!-it (random 1.0)))
-     (iter ,g!-block (for ,g!-prob in ,g!-probs)
-	   (for ,g!-fun in ,g!-funs)
-	   (if (< ,g!-it ,g!-prob)
-	       (return-from ,g!-block (funcall ,g!-fun))
-	       (decf ,g!-it ,g!-prob)))))
+  (destructuring-bind (weights funs) (generate-weights-and-funs clauses)
+    `(let ((,g!-weights (list ,@weights))
+	   (,g!-funs (list ,@funs))
+	   (,g!-it (random 1.0)))
+       (let ((,g!-total (apply #'+ ,g!-weights)))
+	 (format t "Weights are ~a, value is ~a~%" ,g!-weights ,g!-it)
+	 (iter ,g!-block (for ,g!-weight in ,g!-weights)
+	       (for ,g!-fun in ,g!-funs)
+	       (if (<= ,g!-it (/ ,g!-weight ,g!-total))
+		   (return-from ,g!-block (funcall ,g!-fun))
+		   (decf ,g!-it (/ ,g!-weight ,g!-total))))))))
 
-     
-			 
+(defmacro! random-indexed (prefix o!-total &body body)
+  (let ((gen `(lambda (index)
+		    ,@body)))
+    `(let ((weights (iter (for i from 0 below ,o!-total)
+			  (collect (fetch-weight (keywordicate (format nil "~a-~a" ,prefix i)))))))
+       (let ((total (apply #'+ weights))
+	     (it (random 1.0)))
+	 (iter (for index from 0 below ,o!-total)
+	       (for weight in weights)
+	       (if (<= it (/ weight total))
+		   (return (funcall ,gen index))
+		   (decf it (/ weight total))))))))
+	       
+(defun random-var-name ()
+  (random-indexed :var *nvars*
+    (intern #?"VAR-$(index)")))
+
+(defun random-fun-name ()
+  (random-indexed :fun *nfuns*
+    (intern #?"FUN-$(index)")))
+
+(defun random-fun-pointer ()
+  `(symbol-function (quote ,(random-fun-name))))
+
+(defun random-symbol ()
+  (rand-cond (:var-name (random-var-name))
+	     (:fun-name (random-fun-name))
+	     (:fun-pointer (random-fun-pointer))
+	     (:built-in-sym (random-built-in-sym))))
+
+(defun keywordicate (smth)
+  (intern (string smth) (find-package "KEYWORD")))
+
+(defun rand-from-set (set &key prefix)
+  (let ((weights (mapcar (lambda (x)
+			   (fetch-weight (keywordicate (if prefix
+							   #?"$(prefix)-$(x)"
+							   x))))
+			 set)))
+    (let ((total (apply #'+ weights))
+	  (it (random 1.0)))
+      (iter (for elt in set)
+	    (for weight in weights)
+	    (if (<= it (/ weight total))
+		(return elt)
+		(decf it (/ weight total)))))))
+
+(defun random-built-in-sym ()
+  (rand-from-set *built-ins* :prefix :built-in))
+
+(defun random-symbol ()
+  (rand-cond (:a 'a)
+	     (:b 'b)))
 
 (defun random-expression ()
-  (rand-cond (:cons (cons (going-car-probs (random-expression))
-			  (going-cdr-probs (random-expression))))
-	     (:a 'a)
-	     (t 'b)))
+  (rand-cond (:cons (cons (going-car-weights (random-expression))
+			  (going-cdr-weights (random-expression))))
+	     (t (random-symbol))))
 	 
+;; now, how to use this framework in my generation of proper lisp code?

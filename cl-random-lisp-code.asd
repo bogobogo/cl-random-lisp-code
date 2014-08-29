@@ -10,9 +10,11 @@
   :description "Generate random programs on the subset of CL"
   :author "Alexandr Popolitov <popolit@gmail.com>"
   :license "GPL"
-  :depends-on (#:iterate #:cl-interpol #:alexandria #:cl-indeterminism #:lol-re #:defmacro-enhance)
+  :depends-on (#:iterate #:cl-interpol #:alexandria #:cl-indeterminism #:lol-re #:defmacro-enhance
+			 #:cl-read-macro-tokens)
   :components ((:file "package")
-               (:file "cl-random-lisp-code")))
+               (:file "cl-random-lisp-code")
+	       (:file "tree-guided-probability")))
 
 (asdf:defsystem :cl-random-lisp-code-tests
   :description "Tests for CL-RANDOM-LISP-CODE."

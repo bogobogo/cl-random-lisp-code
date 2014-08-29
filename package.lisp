@@ -2,5 +2,5 @@
 
 (defpackage #:cl-random-lisp-code
   (:nicknames #:cl-rlc)
-  (:use #:cl #:iterate #:cl-indeterminism #:lol-re))
+  (:use #:cl #:iterate #:cl-indeterminism #:lol-re #:cl-read-macro-tokens))
 
